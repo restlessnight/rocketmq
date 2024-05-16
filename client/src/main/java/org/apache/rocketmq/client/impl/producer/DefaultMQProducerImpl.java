@@ -129,17 +129,33 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         this(defaultMQProducer, null);
     }
 
+    /**
+     * DefaultMQProducer中的几乎所有的方法内部都是由DefaultMQProducerImpl实现的。
+     * 门面模式设计模式
+     * @param defaultMQProducer
+     * @param rpcHook
+     */
     public DefaultMQProducerImpl(final DefaultMQProducer defaultMQProducer, RPCHook rpcHook) {
         this.defaultMQProducer = defaultMQProducer;
         this.rpcHook = rpcHook;
 
+        //初始化异步发送线程池队列
         this.asyncSenderThreadPoolQueue = new LinkedBlockingQueue<>(50000);
+        // 初始化默认的异步发送线程池
+        //核心线程和最大线程数量都是当前服务器的可用线程数，线程池队列采用LinkedBlockingQueue，大小为50000
         this.defaultAsyncSenderExecutor = new ThreadPoolExecutor(
             Runtime.getRuntime().availableProcessors(),
             Runtime.getRuntime().availableProcessors(),
             1000 * 60,
             TimeUnit.MILLISECONDS,
             this.asyncSenderThreadPoolQueue,
+            /*
+            * 1.定制线程创建逻辑：通过提供自定义的 ThreadFactory 实现，您可以定制线程的创建过程，例如设置线程的命名规则、优先级、守护状态等。这样可以更好地控制线程的行为，并根据应用程序的需求进行定制。
+            * 2.更好的诊断和调试：使用自定义的线程工厂可以为线程池中的每个线程分配有意义的名称，这样在调试和诊断时能更容易地追踪线程的来源和任务。这有助于定位并发问题并进行排查。
+            * 3.统一的线程管理策略：通过使用统一的 ThreadFactory，可以确保线程池中的所有线程都遵循相同的创建策略，从而提高代码的一致性和可维护性。这使得整个应用程序的线程管理更加统一。
+            * 4.避免线程池中线程的特殊化配置：如果不使用自定义的 ThreadFactory，则可能需要在创建线程池后手动为每个线程进行特殊化配置。而通过 ThreadFactory，可以在创建线程池时就定义好线程的配置，避免了手动配置的繁琐过程。
+            * 5.更好的扩展性：如果您需要在未来更改线程的创建逻辑或者添加额外的线程管理功能，使用 ThreadFactory 可以更容易地实现这些变更。您只需修改 ThreadFactory 的实现，而不必修改所有使用线程池的地方。
+             */
             new ThreadFactory() {
                 private AtomicInteger threadIndex = new AtomicInteger(0);
 
@@ -148,13 +164,14 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                     return new Thread(r, "AsyncSenderExecutor_" + this.threadIndex.incrementAndGet());
                 }
             });
+        // 根据配置设置异步发送数量的信号量
         if (defaultMQProducer.getBackPressureForAsyncSendNum() > 10) {
             semaphoreAsyncSendNum = new Semaphore(Math.max(defaultMQProducer.getBackPressureForAsyncSendNum(),10), true);
         } else {
             semaphoreAsyncSendNum = new Semaphore(10, true);
             log.info("semaphoreAsyncSendNum can not be smaller than 10.");
         }
-
+        // 根据配置设置异步发送大小的信号量
         if (defaultMQProducer.getBackPressureForAsyncSendNum() > 1024 * 1024) {
             semaphoreAsyncSendSize = new Semaphore(Math.max(defaultMQProducer.getBackPressureForAsyncSendNum(),1024 * 1024), true);
         } else {
@@ -213,36 +230,53 @@ public class DefaultMQProducerImpl implements MQProducerInner {
     }
 
     public void start(final boolean startFactory) throws MQClientException {
+        // 根据当前服务状态执行不同的逻辑
         switch (this.serviceState) {
+            //务仅仅创建，而不是启动状态，那么启动服务
             case CREATE_JUST:
+                //首先修改服务状态为服务启动失败，如果最终启动成功则再修改为RUNNING
                 this.serviceState = ServiceState.START_FAILED;
-
+                /*
+                 * 1 检查生产者的配置信息
+                 * 主要是检查ProducerGroup是否符合规范，
+                 * 如果ProducerGroup为空，或者长度大于255个字符，或者包含非法字符（正常的匹配模式为 ^[%|a-zA-Z0-9_-]+$），或者生产者组名为默认组名DEFAULT_PRODUCER
+                 * 满足以上任意条件都校验不通过抛出异常。
+                 * 校验字符使用bitmap思想，使用正则表达式匹配，效率较低，因此使用bitmap进行校验。
+                 */
                 this.checkConfig();
-
+                //如果ProducerGroup不是CLIENT_INNER_PRODUCER，那么将修改当前的instanceName为当前进程pid，PID就是服务的进程号。
+                //CLIENT_INNER_PRODUCER是客户端内部的生产者组名，该生产者用于发送消息回退请求
                 if (!this.defaultMQProducer.getProducerGroup().equals(MixAll.CLIENT_INNER_PRODUCER_GROUP)) {
                     this.defaultMQProducer.changeInstanceNameToPID();
                 }
-
+                // 2 获取MQClientManager实例，然后根据clientId（格式为 clientIP@instanceName@unitName） 获取或者创建CreateMQClientInstance实例，并赋给mQClientFactory变量
                 this.mQClientFactory = MQClientManager.getInstance().getOrCreateMQClientInstance(this.defaultMQProducer, rpcHook);
-
+                //  3 将当前生产者注册到MQClientInstance实例的producerTable属性中
                 boolean registerOK = mQClientFactory.registerProducer(this.defaultMQProducer.getProducerGroup(), this);
                 if (!registerOK) {
+                    //  //如果注册失败，那么设置服务属性为CREATE_JUST，并抛出异常
                     this.serviceState = ServiceState.CREATE_JUST;
                     throw new MQClientException("The producer group[" + this.defaultMQProducer.getProducerGroup()
                         + "] has been created before, specify another name please." + FAQUrl.suggestTodo(FAQUrl.GROUP_NAME_DUPLICATE_URL),
                         null);
                 }
-
+                //添加一个默认topic “TBW102”，将会在isAutoCreateTopicEnable属性开启时在broker上自动创建，RocketMQ会基于该Topic的配置创建新的Topic
                 this.topicPublishInfoTable.put(this.defaultMQProducer.getCreateTopicKey(), new TopicPublishInfo());
-
+                /*
+                 * 4 启动CreateMQClientInstance客户端通信实例
+                 * 如果 startFactory 参数为 true，则启动 MQ 客户端工厂
+                 * netty服务、各种定时任务、拉取消息服务、rebalanceService服务
+                 */
                 if (startFactory) {
                     mQClientFactory.start();
                 }
-
+                // 记录生产者启动成功的日志，并将服务状态置为 RUNNING
                 log.info("the producer [{}] start OK. sendMessageWithVIPChannel={}", this.defaultMQProducer.getProducerGroup(),
                     this.defaultMQProducer.isSendMessageWithVIPChannel());
+                //服务状态改为RUNNING
                 this.serviceState = ServiceState.RUNNING;
                 break;
+            //服务状态是其他的，那么抛出异常，即start方法仅能调用一次
             case RUNNING:
             case START_FAILED:
             case SHUTDOWN_ALREADY:
@@ -253,9 +287,9 @@ public class DefaultMQProducerImpl implements MQProducerInner {
             default:
                 break;
         }
-
+        // 5 发送心跳信息给所有broker
         this.mQClientFactory.sendHeartbeatToAllBrokerWithLock();
-
+        // 6 启动一个定时任务，移除超时的请求，并执行异常回调，任务间隔1s
         RequestFutureHolder.getInstance().startScheduledTask(this);
 
     }

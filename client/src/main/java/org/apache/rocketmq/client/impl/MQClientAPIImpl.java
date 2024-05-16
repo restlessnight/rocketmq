@@ -311,7 +311,16 @@ public class MQClientAPIImpl implements NameServerUpdateCallback {
         this.remotingClient.updateNameServerAddressList(list);
     }
 
+    /**
+     * MqClientAPIImpl#start
+     *
+     */
     public void start() {
+        /**
+         * mQClientAPIImpl#start内部就是调用的NettyRemotingClient#start方法。
+         * NettyRemotingClient属于remoting包下面的类，该类被其他模块例如broker共同使用
+         */
+        //调用NettyRemotingClient#start
         this.remotingClient.start();
     }
 
@@ -1773,17 +1782,39 @@ public class MQClientAPIImpl implements NameServerUpdateCallback {
         return getTopicRouteInfoFromNameServer(topic, timeoutMillis, false);
     }
 
+    /**
+     * MQClientAPIImpl的方法
+     * 从nameServer获取当前指定topic的路由信息
+     * @param topic         指定topic名字
+     * @param timeoutMillis 超时时间3s
+     */
     public TopicRouteData getTopicRouteInfoFromNameServer(final String topic, final long timeoutMillis)
         throws RemotingException, MQClientException, InterruptedException {
+        //允许topic不存在
         return getTopicRouteInfoFromNameServer(topic, timeoutMillis, true);
     }
 
+    /**
+     *
+     * @param topic 队列名
+     * @param timeoutMillis 超时时间
+     * @param allowTopicNotExist 是否允许topic不存在
+     * @return
+     * @throws MQClientException
+     * @throws InterruptedException
+     * @throws RemotingTimeoutException
+     * @throws RemotingSendRequestException
+     * @throws RemotingConnectException
+     */
     public TopicRouteData getTopicRouteInfoFromNameServer(final String topic, final long timeoutMillis,
         boolean allowTopicNotExist) throws MQClientException, InterruptedException, RemotingTimeoutException, RemotingSendRequestException, RemotingConnectException {
+        //构建请求头
         GetRouteInfoRequestHeader requestHeader = new GetRouteInfoRequestHeader();
+        //topic设置到请求头中
         requestHeader.setTopic(topic);
+        //获取请求命令对象，请求的Code为GET_ROUTEINFO_BY_TOPIC，105
         RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.GET_ROUTEINFO_BY_TOPIC, requestHeader);
-
+        //同步远程调用，请求nameServer服务，注意这里的addr参数为nll，即producer会随机连接一个nameServer
         RemotingCommand response = this.remotingClient.invokeSync(null, request, timeoutMillis);
         assert response != null;
         switch (response.getCode()) {
@@ -1795,6 +1826,7 @@ public class MQClientAPIImpl implements NameServerUpdateCallback {
                 break;
             }
             case ResponseCode.SUCCESS: {
+                //如果响应成功，那么对响应体进行解码
                 byte[] body = response.getBody();
                 if (body != null) {
                     return TopicRouteData.decode(body, TopicRouteData.class);

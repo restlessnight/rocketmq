@@ -212,14 +212,23 @@ public class DefaultMQProducer extends ClientConfig implements MQProducer {
 
     /**
      * Constructor specifying namespace, producer group and RPC hook.
+     * 定命名空间、生产者组和RPC钩子的构造函数。
+     * DefaultMQProducer中的几乎所有的方法内部都是由DefaultMQProducerImpl实现的。
+     * 门面模式设计模式
      *
      * @param namespace Namespace for this MQ Producer instance.
+     *                  命名空间，用于标识RocketMQ的命名空间。RocketMQ的命名空间是在4.5.0版本中引入的新特性，用于隔离不同业务场景的命名空间，可以让不同业务之间的数据互相隔离。
      * @param producerGroup Producer group, see the name-sake field.
+     *                      生产者组，用于标识同一业务下的所有生产者。生产者组可以用来在RocketMQ的控制台中进行管理，例如查看生产者组的消息发送情况、监控统计等。
      * @param rpcHook RPC hook to execute per each remoting command execution.
+     *                用于设置RPC钩子，该钩子可以在发送消息之前或之后执行一些自定义逻辑。例如，您可以使用RPC钩子来实现消息发送前的日志记录、消息发送后的监控统计等功能。
      */
     public DefaultMQProducer(final String namespace, final String producerGroup, RPCHook rpcHook) {
+        //命名空间
         this.namespace = namespace;
+        //生产者组
         this.producerGroup = producerGroup;
+        //根据RPC钩子创建DefaultMQProducerImpl实例，负责发送消息
         defaultMQProducerImpl = new DefaultMQProducerImpl(this, rpcHook);
     }
 
